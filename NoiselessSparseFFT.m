@@ -5,16 +5,20 @@ zhat = zeros(n,1);
 
 for t = 0:log2(k)
     kt = k/(2^t);
-    zhat = zhat + NoiselessSparseFFT_Inner(x,kt,zhat);
+    alpha = 1/(2^(t+1));
+    zhat = zhat + NoiselessSparseFFT_Inner(x,kt,zhat,alpha);
 end
 
 end
 
-function w_hat = NoiselessSparseFFT_Inner(x,k,zhat)
+function w_hat = NoiselessSparseFFT_Inner(x,k,zhat,alpha)
 
 n = length(x);
-B = 2^nextpow2(8*k);
-filter = make_gaussian_filter(n,B);
+B = 2^nextpow2(16*k);
+% width = (1-alpha)*n/2/B
+filter = make_gaussian_filter(n,(1-alpha)*n/2/B);
+% filter = helpers().design_filter(n,width,0.1);
+
 
 odds = 1:2:(n-1);
 sigma = odds(randi(numel(odds)));
@@ -52,25 +56,26 @@ end
 function uhat = hash2bins(x, zhat, sigma, a, b, B, filter)
 
 n = length(x);
+downsampling = round(n/B);
 
 % 1. permute + filter
 y = filter.g .* perm(x, sigma, a, b);
 
 % 2. downsample
-idx = 1:B:n;
-yhat = n*B*fft(y(idx));
+idx = 1:downsampling:n;
+yhat = n*downsampling*fft(y(idx));
 
-figure
-subplot(511)
-stem(abs(fft(x)))
-subplot(512)
-stem(abs(fft(perm(x, sigma, a, b))))
-subplot(513)
-stem(abs(filter.g))
-subplot(514)
-stem(n*abs(fft(y)))
-subplot(515)
-stem(abs(yhat))
+% figure
+% subplot(511)
+% stem(abs(fft(x)))
+% subplot(512)
+% stem(abs(fft(perm(x, sigma, a, b))))
+% subplot(513)
+% stem(abs(filter.g_hat))
+% subplot(514)
+% stem(n*abs(fft(y)))
+% subplot(515)
+% stem(abs(yhat))
 
 % 3. alias cancellation
 if ~isempty(zhat)
@@ -80,7 +85,7 @@ if ~isempty(zhat)
 
     % B. circular convolution of length B
     % Corrected!
-    v = cconv(filter.g_hat_prime, zhat_perm_ds, round(n/B));
+    v = cconv(filter.g_hat_prime, zhat_perm_ds, B);
 
     % v = ifft( fft(filter.g_hat_prime) .* fft(zhat_perm_ds) );
 

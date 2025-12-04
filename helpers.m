@@ -20,22 +20,56 @@ function [X, freqs, coeffs] = generate_sparse_freq(N, k, L)
     freqs = freqs - 1;
 end
 
+% function [X, freqs, coeffs] = generate_sparse_freq_domain(N, k, L)
+%     % Uniformly spaced frequencies across the entire bandwidth
+%     spacing = floor(N / k);
+%     freqs = (1:k).' * spacing;      % spaced inside [spacing, ..., k*spacing]
+%     freqs = freqs - 1;              % shift to zero-based indexing
+% 
+%     % Random complex coefficients
+%     coeffs = L*ones(k,1);
+% 
+%     % Construct sparse spectrum
+%     X = zeros(N,1);
+%     X(freqs + 1) = coeffs;          % convert back to MATLAB 1-based indexing
+% 
+%     % Normalize
+%     X = X / max(abs(X));
+% end
+
 function [X, freqs, coeffs] = generate_sparse_freq_domain(N, k, L)
-    % Uniformly spaced frequencies across the entire bandwidth
-    spacing = floor(N / k);
-    freqs = (1:k).' * spacing;      % spaced inside [spacing, ..., k*spacing]
-    freqs = freqs - 1;              % shift to zero-based indexing
+    % Generates k frequencies in [0, N-1] with minimum separation L
+    % All coefficients are exactly 1 (complex)
+    
+    chosen = [];
 
-    % Random complex coefficients
-    coeffs = L*ones(k,1);
+    for i = 1:k
+        while true
+            f = randi([0, N-1]);      % candidate frequency
 
-    % Construct sparse spectrum
+            % Check minimum spacing
+            if isempty(chosen) || all(abs(f - chosen) >= L)
+                chosen(end+1) = f;
+                break;
+            end
+        end
+    end
+
+    % Sort for convenience (optional)
+    freqs = sort(chosen(:));
+
+    % All coefficients = 1
+    coeffs = ones(k,1);
+
+    % Sparse spectrum
     X = zeros(N,1);
-    X(freqs + 1) = coeffs;          % convert back to MATLAB 1-based indexing
+    X(freqs + 1) = coeffs;            % 1-based indexing
 
-    % Normalize
-    X = X / max(abs(X));
+    % No normalization needed — but if desired uncomment:
+    % X = X / max(abs(X));
+
 end
+
 
 
 function x_noisy = add_awgn(x, snr_dB)
@@ -67,17 +101,21 @@ x_noisy = x + noise;
 
 end
 
-function [t_filter, f_filter, fp_filter] = design_filter(N,samples,B)
+function filter = design_filter(N,B,tolerance)
     f_filter = zeros(N,1);
-    f_filter(1:samples) = 1; % box window in the frequency domain
+    half = B/2;             % B must be even
+    f_filter(1:half) = 1;
+    f_filter(end-half+1:end) = 1;
     t_filter = ifft(f_filter); % box window in time domain -> sinc
-
-    % polyphase matrix: B filters, each length = N/B
-    fp_filter = zeros(N/B, B);
+    idx = t_filter <= tolerance;
+    t_filter(idx) = 0;
     
-    for b = 0:B-1
-        fp_filter(:, b+1) = t_filter(1+b : B : end);
-    end
+    % polyphase matrix: B filters, each length = N/B
+    fp_filter = f_filter(1:round(N/B):N);
+
+    filter.g = t_filter;
+    filter.g_hat = f_filter;
+    filter.g_hat_prime = fp_filter;
 end
 
 function [t_filters, nz_idx_list, nz_vals_list] = make_multiple_filters(N,t_filter,num,samples)
