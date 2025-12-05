@@ -5,8 +5,16 @@ zhat = zeros(n,1);
 
 for t = 0:log2(k)
     kt = k/(2^t);
-    alpha = 1/(2^(t+1));
+    alpha = 0.25;
     zhat = zhat + NoiselessSparseFFT_Inner(x,kt,zhat,alpha);
+    idd = find(abs(zhat) > 0);
+    % if length(idd) >= k
+    %     break
+    % end
+    % figure
+    % stem(abs(fft(x)))
+    % hold on
+    % stem(idd, abs(zhat(idd)), 'r', 'filled');
 end
 
 end
@@ -14,10 +22,10 @@ end
 function w_hat = NoiselessSparseFFT_Inner(x,k,zhat,alpha)
 
 n = length(x);
-B = 2^nextpow2(16*k);
-% width = (1-alpha)*n/2/B
-filter = make_gaussian_filter(n,(1-alpha)*n/2/B);
-% filter = helpers().design_filter(n,width,0.1);
+B = 2^nextpow2(512*k); % tunung based on sparsity and length
+width = (1-alpha)*n/2/B;
+filter = make_gaussian_filter(n,width);
+% filter = helpers().design_filter(n,width);
 
 
 odds = 1:2:(n-1);
@@ -27,17 +35,8 @@ b = randi([0, n-1]);
 u_hat = hash2bins(x,zhat,sigma,0,b,B,filter);
 up_hat = hash2bins(x,zhat,sigma,1,b,B,filter);
 
-% while ~check_good_permutation(u_hat,up_hat,1e-3)
-%     odds = 1:2:(n-1);
-%     sigma = odds(randi(numel(odds)));
-%     b = randi([0, n-1]);
-% 
-%     u_hat = hash2bins(x,zhat,sigma,0,b,B,filter);
-%     up_hat = hash2bins(x,zhat,sigma,1,b,B,filter);
-% end
-
-w_hat = zeros(n,1);
 J = find(abs(u_hat) >= 1-2e-12);
+w_hat = zeros(n,1);
 
 for kk = 1:length(J)
     jj = J(kk);
@@ -49,7 +48,6 @@ for kk = 1:length(J)
     v = round(u_hat(jj));
     w_hat(idx) = v;
 end
-
 
 end
 
@@ -66,22 +64,22 @@ idx = 1:downsampling:n;
 yhat = n*downsampling*fft(y(idx));
 
 % figure
-% subplot(511)
+% subplot(611)
 % stem(abs(fft(x)))
-% subplot(512)
+% subplot(612)
 % stem(abs(fft(perm(x, sigma, a, b))))
-% subplot(513)
+% subplot(613)
 % stem(abs(filter.g_hat))
-% subplot(514)
+% subplot(614)
 % stem(n*abs(fft(y)))
-% subplot(515)
+% subplot(615)
 % stem(abs(yhat))
 
 % 3. alias cancellation
 if ~isempty(zhat)
 
     % A. permute zhat in frequency domain, then downsample
-    zhat_perm_ds = perm_freq_downsample(zhat, sigma, b, n, B);
+    zhat_perm_ds = perm_freq_downsample(zhat, sigma,a, b, n, B);
 
     % B. circular convolution of length B
     % Corrected!
@@ -92,6 +90,9 @@ if ~isempty(zhat)
     % C. subtract
     yhat = yhat - v;
 end
+
+% subplot(616)
+% stem(abs(yhat))
 
 uhat = yhat;
 end
@@ -107,15 +108,15 @@ y = x(idx) .* phase;
 end
 
 
-function zhat_perm_ds = perm_freq_downsample(zhat, sigma, b, n, B)
+function zhat_perm_ds = perm_freq_downsample(zhat, sigma,a, b, n, B)
 
 sigma_inv = modinv(sigma, n);
-k = (1:B:n).'-1;
+k = (1:round(n/B):n).'-1;
 
-idx = mod(sigma_inv * k, n) + 1;
-zhat_perm = zhat(idx);
+idx = mod(sigma_inv * k + b, n) + 1;
+zhat_perm = round(n/B)*zhat(idx);
 
-phase = exp(-2i*pi * b * k / n);
+phase = exp(-2i*pi * a * k / n);
 zhat_perm_ds = zhat_perm .* phase;
 end
 
@@ -139,7 +140,7 @@ H = H .* gauss;
 g = ifft(H);
 
 % 3. downsampled freq response
-g_hat_prime = H(1:B:end);
+g_hat_prime = round(N/B)*H(1:round(N/B):end);
 
 filt.g = g;
 filt.g_hat = H;
@@ -165,28 +166,4 @@ if old_r ~= 1
     error('modinv: no inverse exists (gcd ~= 1)');
 end
 inv = mod(old_s, m);
-end
-
-function ok = check_good_permutation(u_hat, up_hat, tol)
-% Returns true if all bins with significant magnitude
-% have |u_hat| ≈ |up_hat|.
-
-if nargin < 3
-    tol = 1e-6;
-end
-
-% Find candidate bins (only nonzero / large bins)
-J = find(abs(u_hat) > 1e-3);
-
-ok = true;
-
-for jj = J
-    mag1 = abs(u_hat(jj));
-    mag2 = abs(up_hat(jj));
-
-    if abs(mag1 - mag2) > tol
-        ok = false;
-        return;
-    end
-end
 end
