@@ -77,83 +77,88 @@ function [omega, amplitude] = sft_phase_encoding(signal, N)
 end
 
 function [omega, amplitude] = sft_binary_search(signal, N)
-    % Corrected Binary Search / Successive Approximation
-    % Resolves frequency by peeling off bits using increasing strides.
-    
-    omega_accum = 0;
-    current_stride = 1;
-    
-    % Number of stages: log4(N) is ideal as we resolve 2 bits (quadrant) per step
-    % We run until stride reaches N/4 to cover all bits
-    max_stages = ceil(log(N)/log(2)); 
-    
-    for k = 1:max_stages
-        % 1. Predict expected phase contribution from already found freq
-        %    at the current stride.
-        expected_phase_shift = exp(2*pi*1i * omega_accum * current_stride / N);
-        
-        % 2. Measure actual sample at current stride
-        %    (Index is stride+1 because Matlab is 1-based)
-        if current_stride >= N
-            break; 
-        end
-        val = signal(current_stride + 1);
-        
-        % 3. Compute Residual (remove known frequency part)
-        %    f_measured = A * exp(w * stride)
-        %    f_resid    = f_measured / exp(w_accum * stride)
-        %               = A * exp((w - w_accum) * stride)
-        resid_val = val / expected_phase_shift;
-        
-        % 4. Determine Quadrant of the Residual
-        %    This tells us the error term.
-        %    Q0 (0):   0..0.25   -> Offset 0
-        %    Q1 (i):   0.25..0.5 -> Offset 1
-        %    Q2 (-1):  0.5..0.75 -> Offset 2
-        %    Q3 (-i):  0.75..1.0 -> Offset 3
-        
-        % Check alignment with axes
-        lhs_i = abs(1i * signal(1) - resid_val); % Compare with i*Amp
-        rhs_i = abs(1i * signal(1) + resid_val); % Compare with -i*Amp
-        closer_to_i_axis = lhs_i < rhs_i; % True if closer to i than -i
-        
-        lhs_1 = abs(signal(1) - resid_val);      % Compare with 1*Amp
-        rhs_1 = abs(signal(1) + resid_val);      % Compare with -1*Amp
-        closer_to_1_axis = lhs_1 < rhs_1; % True if closer to 1 than -1
-        
-        region_offset = 0;
-        
-        if closer_to_1_axis
-            if closer_to_i_axis
-                region_offset = 0; % Q1 (Top-Right) -> 0
-            else
-                region_offset = 3; % Q4 (Bottom-Right) -> 3
-            end
-        else
-            if closer_to_i_axis
-                region_offset = 1; % Q2 (Top-Left) -> 1
-            else
-                region_offset = 2; % Q3 (Bottom-Left) -> 2
-            end
-        end
-        
-        % 5. Update Omega
-        %    The resolution of a quadrant at 'stride' is N / (4 * stride)
-        correction = region_offset * (N / (4 * current_stride));
-        omega_accum = omega_accum + correction;
-        
-        % 6. Increase Stride (Decimate)
-        %    We multiply by 2? Or 4?
-        %    Quadrants give 2 bits. Doubling stride shifts phase by 2x.
-        %    If we resolved 2 bits, we can multiply stride by 4 ideally.
-        %    But to be safe against boundary errors, stride * 2 is often used 
-        %    with overlapping bins. For this specific 'k=1' simplified logic,
-        %    doubling works well to refine precision.
-        current_stride = current_stride * 2;
+    % sft_binary_search
+    % Recover integer frequency omega for a 1-sparse complex exponential:
+    %   f(j) = A * exp(2*pi*i*omega*j/N)
+    %
+    % Uses O(log N) samples and decodes the bits of omega from phase
+    % measurements at carefully chosen strides.
+    %
+    % Assumes: 
+    %   - N is a power of 2
+    %   - signal is noiseless or low-noise
+    %   - spectrum is 1-sparse
+
+    % ------- Safety checks -------
+    m = round(log2(N));
+    if 2^m ~= N
+        error('sft_binary_search: N must be a power of 2.');
     end
     
-    omega = omega_accum;
-    amplitude = signal(1);
+    f0 = signal(1);   % f(0) = A * exp(0) = A
+    if abs(f0) < 1e-12
+        % If the DC sample is essentially zero, we can’t recover A or omega
+        omega     = 0;
+        amplitude = 0;
+        return;
+    end
+
+    % ------- Bit-by-bit reconstruction of omega -------
+    %
+    % Let omega be written in binary:
+    %   omega = b_{m-1} 2^{m-1} + ... + b_1 2^1 + b_0 2^0.
+    %
+    % For k = 0..m-1 we choose stride:
+    %   s_k = N / 2^{k+1}.
+    %
+    % Then:
+    %   r_k = f(s_k) / f(0) = exp(2*pi*i*omega*s_k/N)
+    %       = exp(2*pi*i*omega / 2^{k+1}).
+    %
+    % The phase of r_k only depends on the LOWER (k+1) bits of omega.
+    % If we already know bits b_0..b_{k-1} (encoded in "lower_bits"),
+    % we can remove their effect and what remains is just b_k * pi:
+    %
+    %   r_k_corrected = r_k / exp(2*pi*i*lower_bits / 2^{k+1})
+    %   => phase(r_k_corrected) ≈ 0      if b_k = 0
+    %                         ≈ pi (or -pi) if b_k = 1
+    %
+    % So sign(real(r_k_corrected)) tells us b_k.
+
+    lower_bits = 0;   % This will store sum_{j=0}^{k-1} b_j 2^j
+    
+    for k = 0:(m-1)
+        % Stride for this bit
+        stride = N / 2^(k+1);
+        idx    = stride + 1;   % MATLAB is 1-based
+        
+        if idx > N
+            error('sft_binary_search: stride index exceeds signal length.');
+        end
+        
+        % Ratio r_k = f(stride) / f(0)
+        val    = signal(idx);
+        r_meas = val / f0;
+        
+        % Remove phase contribution of already-found lower bits
+        expected_lower = exp(2*pi*1i * lower_bits / 2^(k+1));
+        r_corr         = r_meas / expected_lower;
+        
+        % Decide bit b_k:
+        %   if real(r_corr) >= 0  -> phase ~ 0    -> b_k = 0
+        %   if real(r_corr) <  0  -> phase ~ pi   -> b_k = 1
+        if real(r_corr) >= 0
+            bit_k = 0;
+        else
+            bit_k = 1;
+        end
+        
+        lower_bits = lower_bits + bit_k * 2^k;
+    end
+
+    % Wrap into [0, N-1]
+    omega     = mod(lower_bits, N);
+    amplitude = f0;   % A = f(0)
 end
 
 function [omega, amplitude] = sft_aliased_search(signal, N, factors)
